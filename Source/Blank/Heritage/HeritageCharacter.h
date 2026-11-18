@@ -50,7 +50,7 @@ protected:
     void StartCrouch();
     void EndCrouch();
     void ResetLevel();
-    void ToggleMap();
+    void PrimaryClick();
     void ToggleArchive();
     void TransportPressed(int32 Direction);
     void TransportReleased(int32 Direction);
@@ -69,7 +69,6 @@ protected:
     UPROPERTY() TObjectPtr<UInputAction> UseAction;
     UPROPERTY() TObjectPtr<UInputAction> DashAction;
     UPROPERTY() TObjectPtr<UInputAction> CameraModeAction;
-    UPROPERTY() TObjectPtr<UInputAction> MapAction;
     UPROPERTY() TObjectPtr<UInputAction> ArchiveAction;
     UPROPERTY() TObjectPtr<UInputAction> ForwardAction;
     UPROPERTY() TObjectPtr<UInputAction> RewindAction;

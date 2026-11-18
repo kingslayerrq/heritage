@@ -18,7 +18,6 @@ public:
     UPROPERTY() TObjectPtr<AHeritageDemoRoom> FilmRoom;
     UPROPERTY() TObjectPtr<AHeritageFilmDirector> Director;
     TArray<FName> OwnedReels;
-    bool bKeySceneUploaded = false;
     bool bLeafRewardUnlocked = false;
     bool bSliceComplete = false;
     int32 ObjectiveStage = 1;
@@ -26,17 +25,15 @@ public:
     void CollectReel(FName ReelId);
     bool EnterFilm(FName ReelId);
     void LeaveFilm();
+    void ToggleReel();
     void ToggleScreen(EHeritageScreen Screen);
     void CloseScreen();
     bool CanUseVerbs() const;
     bool CanUseCamera() const;
     bool CanMove() const;
     bool RequiresScanHere() const;
-    bool IsKeySceneUploaded() const { return bKeySceneUploaded; }
     void NotifyScan();
     void NotifyMissingFrame();
-    void NotifyImaged();
-    void NotifyKeyUploaded();
     void UnlockLeafReward();
     void CompleteSlice();
     void ApplyPostProcess();
@@ -47,8 +44,6 @@ public:
     UPROPERTY(EditAnywhere, Category="Heritage") float FilmGrain = 0.6f;
     UPROPERTY(EditAnywhere, Category="Heritage") float FilmVignette = 0.8f;
 private:
-    bool bOpenedArchive = false;
-    bool bOpenedMap = false;
     void PreparePlayer();
     void ChangeScreen(EHeritageScreen Screen);
     void TeleportBetween(AHeritageDemoRoom* From, AHeritageDemoRoom* To);

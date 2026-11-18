@@ -66,7 +66,7 @@ void UHeritageInteractorComponent::TickComponent(float DeltaTime, ELevelTick Tic
             {
                 FHeritageStimulus Photo; Photo.Type = HeritageTags::Stimulus_Photo; Photo.Instigator = Character; Photo.Source = Character; Photo.Location = Hit.ImpactPoint;
                 UHeritageStatics::SendStimulus(NewFocus->GetOwner(), Photo);
-                UHeritageStatics::Toast(this, FText::Format(NSLOCTEXT("Heritage", "CaptureToast", "Captured: {0}"), NewFocus->DisplayName));
+                if (NewFocus->GetOwner()->IsHidden()) { Focused.Reset(); ScanProgress = 0.f; }
                 FlashEndTime = GetWorld()->GetTimeSeconds() + FlashDuration;
             }
         }

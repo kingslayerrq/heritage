@@ -4,6 +4,7 @@
 #include "HeritageCharacter.h"
 #include "HeritageInteractorComponent.h"
 #include "HeritageProps.h"
+#include "HeritageObjectComponent.h"
 #include "HeritageHUD.h"
 #include "HeritageStatics.h"
 #include "HeritageTags.h"
@@ -18,7 +19,7 @@ void UHeritageGameFlowSubsystem::CollectReel(FName ReelId)
 {
     if (OwnsReel(ReelId)) { return; }
     OwnedReels.Add(ReelId); ObjectiveStage = FMath::Max(ObjectiveStage, 3);
-    if (!bOpenedMap) { bOpenedMap = true; ChangeScreen(EHeritageScreen::Map); }
+    UHeritageStatics::Toast(this, NSLOCTEXT("Heritage", "ReelOwned", "Reel added. Press [N] to open the Archive."));
 }
 void UHeritageGameFlowSubsystem::PreparePlayer()
 {
@@ -54,8 +55,13 @@ void UHeritageGameFlowSubsystem::LeaveFilm()
 {
     if (Era != EHeritageEra::Film || !Director || !RealityRoom || !FilmRoom) { return; }
     PreparePlayer(); Director->EndVisit(); CloseScreen(); TeleportBetween(FilmRoom, RealityRoom); Era = EHeritageEra::Reality;
-    ApplyPostProcess(); if (bKeySceneUploaded) { ObjectiveStage = 8; }
+    ApplyPostProcess(); if (Director->HasShownLastFrame() || Director->GetFirstUnrestoredFrame() == INDEX_NONE) { ObjectiveStage = 8; }
     UHeritageStatics::LogAction(this, HeritageTags::Verb_Film, FText::GetEmpty(), FText::GetEmpty(), NSLOCTEXT("Heritage", "LeftFilm", "Returned to Reality."));
+}
+void UHeritageGameFlowSubsystem::ToggleReel()
+{
+    if (Era == EHeritageEra::Film) { LeaveFilm(); }
+    else { EnterFilm(TEXT("Reel1")); }
 }
 void UHeritageGameFlowSubsystem::ChangeScreen(EHeritageScreen Screen)
 {
@@ -65,6 +71,22 @@ void UHeritageGameFlowSubsystem::ChangeScreen(EHeritageScreen Screen)
     if (Director && Era == EHeritageEra::Film) { Director->SetScreenSuspended(Screen != EHeritageScreen::None); }
     if (auto* PC = UGameplayStatics::GetPlayerController(this, 0))
     {
+        const bool bOpen = Screen != EHeritageScreen::None;
+        PC->bShowMouseCursor = bOpen;
+        if (bOpen)
+        {
+            FInputModeGameAndUI InputMode;
+            InputMode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
+            InputMode.SetHideCursorDuringCapture(false);
+            PC->SetInputMode(InputMode);
+        }
+        else
+        {
+            // This mode sets viewport focus and high-precision capture immediately in 5.8.
+            FInputModeGameOnly InputMode;
+            InputMode.SetConsumeCaptureMouseDown(true);
+            PC->SetInputMode(InputMode);
+        }
         if (auto* HUD = Cast<AHeritageHUD>(PC->GetHUD())) { HUD->ResetNavigation(); }
     }
     // Stop movement already in progress, not just subsequent input events.
@@ -86,17 +108,13 @@ bool UHeritageGameFlowSubsystem::CanUseVerbs() const
 bool UHeritageGameFlowSubsystem::CanUseCamera() const { return CanMove() && Era == EHeritageEra::Reality; }
 bool UHeritageGameFlowSubsystem::CanMove() const { return OpenScreen == EHeritageScreen::None; }
 bool UHeritageGameFlowSubsystem::RequiresScanHere() const { return Era == EHeritageEra::Reality && UHeritageStatics::RequiresScan(); }
-void UHeritageGameFlowSubsystem::NotifyScan()
-{
-    ObjectiveStage = FMath::Max(ObjectiveStage, 2);
-    if (!bOpenedArchive) { bOpenedArchive = true; ChangeScreen(EHeritageScreen::Archive); }
-}
+void UHeritageGameFlowSubsystem::NotifyScan() { ObjectiveStage = FMath::Max(ObjectiveStage, 2); }
 void UHeritageGameFlowSubsystem::NotifyMissingFrame() { ObjectiveStage = FMath::Max(ObjectiveStage, 5); }
-void UHeritageGameFlowSubsystem::NotifyImaged() { ObjectiveStage = FMath::Max(ObjectiveStage, 6); }
-void UHeritageGameFlowSubsystem::NotifyKeyUploaded() { bKeySceneUploaded = true; ObjectiveStage = Era == EHeritageEra::Film ? 7 : 8; }
 void UHeritageGameFlowSubsystem::UnlockLeafReward()
 {
+    if (bLeafRewardUnlocked) { return; }
     bLeafRewardUnlocked = true;
+    UHeritageStatics::Toast(this, NSLOCTEXT("Heritage", "KnowWhere", "You know where to look now."));
     if (RealityRoom && RealityRoom->Reel2 && !OwnsReel(TEXT("Reel2")))
     {
         RealityRoom->Reel2->SetActorHiddenInGame(false); RealityRoom->Reel2->SetActorEnableCollision(true);
@@ -119,20 +137,32 @@ void UHeritageGameFlowSubsystem::ApplyPostProcess()
 FText UHeritageGameFlowSubsystem::GetObjectiveText() const
 {
     if (bSliceComplete) { return NSLOCTEXT("Heritage", "SliceCompleteObjective", "SLICE COMPLETE - [R] Reset"); }
-    if (bKeySceneUploaded)
+    const int32 FirstUnrestored = Director ? Director->GetFirstUnrestoredFrame() : INDEX_NONE;
+    if (Director && (Director->HasShownLastFrame() || FirstUnrestored == INDEX_NONE))
     {
-        return Era == EHeritageEra::Film ? NSLOCTEXT("Heritage", "Objective7", "Leave the reel [M]. Use what you learned.") : NSLOCTEXT("Heritage", "Objective8", "Open the door.");
+        return Era == EHeritageEra::Film ? NSLOCTEXT("Heritage", "V2ObjectiveLeave", "Leave the reel [Enter]. Use what you saw.") : NSLOCTEXT("Heritage", "Objective8", "Open the door.");
     }
-    if (Era == EHeritageEra::Reality && OwnsReel(TEXT("Reel1"))) { return NSLOCTEXT("Heritage", "Objective3", "Open the Map [M] and enter the reel."); }
-    switch (ObjectiveStage)
+    if (Era == EHeritageEra::Reality)
     {
-    case 1: return NSLOCTEXT("Heritage", "Objective1", "Take out the camera [Tab] and scan something of value.");
-    case 2: return NSLOCTEXT("Heritage", "Objective2", "Scan the film reel on the table, then pick it up [F].");
-    case 3: return NSLOCTEXT("Heritage", "Objective3", "Open the Map [M] and enter the reel.");
-    case 4: return NSLOCTEXT("Heritage", "Objective4", "Watch. [Space] pause | [E] forward | [Q] rewind.");
-    case 5: return NSLOCTEXT("Heritage", "Objective5", "A frame is missing. Pause and act out what happened.");
-    case 6: return NSLOCTEXT("Heritage", "Objective6", "Imaged. Open the Archive [N], compose the frame and upload.");
-    case 7: return NSLOCTEXT("Heritage", "Objective7", "Leave the reel [M]. Use what you learned.");
-    default: return NSLOCTEXT("Heritage", "Objective8", "Open the door.");
+        if (RealityRoom && RealityRoom->Portrait && RealityRoom->Portrait->Object->HasState(HeritageTags::State_Open))
+        {
+            return NSLOCTEXT("Heritage", "Objective8", "Open the door.");
+        }
+        if (OwnsReel(TEXT("Reel1"))) { return NSLOCTEXT("Heritage", "V2ObjectiveEnter", "Open the Archive [N], or enter the reel [Enter]."); }
+        return ObjectiveStage <= 1 ? NSLOCTEXT("Heritage", "Objective1", "Take out the camera [Tab] and scan something of value.") :
+            NSLOCTEXT("Heritage", "V2ObjectiveScan", "Scan the film reel on the table.");
     }
+    if (Director)
+    {
+        if (Director->IsImaged(FirstUnrestored))
+        {
+            return FText::Format(NSLOCTEXT("Heritage", "V2ObjectiveImaged", "Frame {0} imaged. Open the Archive [N] and upload."), FText::AsNumber(FirstUnrestored + 1));
+        }
+        if (Director->IsLocked(Director->GetSceneIndex() + 1))
+        {
+            return FText::Format(NSLOCTEXT("Heritage", "ObjectiveRewindToGap", "Rewind [Q] to frame {0}, then pause [Space] and act it out."), FText::AsNumber(FirstUnrestored + 1));
+        }
+    }
+    return ObjectiveStage >= 5 ? NSLOCTEXT("Heritage", "V2ObjectiveMissing", "A frame is missing. Pause [Space] and act out what happened.") :
+        NSLOCTEXT("Heritage", "Objective4", "Watch. [Space] pause | [E] forward | [Q] rewind.");
 }

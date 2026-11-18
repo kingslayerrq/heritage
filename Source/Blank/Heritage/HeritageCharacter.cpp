@@ -54,7 +54,6 @@ void AHeritageCharacter::PostInitializeComponents()
     UseAction = MakeAction(EInputActionValueType::Boolean);
     DashAction = MakeAction(EInputActionValueType::Boolean);
     CameraModeAction = MakeAction(EInputActionValueType::Boolean);
-    MapAction = MakeAction(EInputActionValueType::Boolean);
     ArchiveAction = MakeAction(EInputActionValueType::Boolean);
     ForwardAction = MakeAction(EInputActionValueType::Boolean);
     RewindAction = MakeAction(EInputActionValueType::Boolean);
@@ -84,7 +83,6 @@ void AHeritageCharacter::PostInitializeComponents()
     MappingContext->MapKey(UseAction, EKeys::F);
     MappingContext->MapKey(DashAction, EKeys::LeftShift);
     MappingContext->MapKey(CameraModeAction, EKeys::Tab);
-    MappingContext->MapKey(MapAction, EKeys::M);
     MappingContext->MapKey(ArchiveAction, EKeys::N);
     MappingContext->MapKey(ForwardAction, EKeys::E);
     MappingContext->MapKey(RewindAction, EKeys::Q);
@@ -134,12 +132,11 @@ void AHeritageCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputC
         Input->BindAction(CrouchAction, ETriggerEvent::Started, this, &AHeritageCharacter::StartCrouch);
         Input->BindAction(CrouchAction, ETriggerEvent::Completed, this, &AHeritageCharacter::EndCrouch);
         Input->BindAction(ResetAction, ETriggerEvent::Started, this, &AHeritageCharacter::ResetLevel);
-        Input->BindAction(GrabAction, ETriggerEvent::Started, Interactor.Get(), &UHeritageInteractorComponent::GrabOrDrop);
+        Input->BindAction(GrabAction, ETriggerEvent::Started, this, &AHeritageCharacter::PrimaryClick);
         Input->BindAction(ThrowAction, ETriggerEvent::Started, Interactor.Get(), &UHeritageInteractorComponent::Throw);
         Input->BindAction(UseAction, ETriggerEvent::Started, Interactor.Get(), &UHeritageInteractorComponent::Use);
         Input->BindAction(DashAction, ETriggerEvent::Started, this, &AHeritageCharacter::Dash);
         Input->BindAction(CameraModeAction, ETriggerEvent::Started, Interactor.Get(), &UHeritageInteractorComponent::ToggleCameraMode);
-        Input->BindAction(MapAction, ETriggerEvent::Started, this, &AHeritageCharacter::ToggleMap);
         Input->BindAction(ArchiveAction, ETriggerEvent::Started, this, &AHeritageCharacter::ToggleArchive);
         Input->BindAction(BackAction, ETriggerEvent::Started, this, &AHeritageCharacter::Back);
         Input->BindAction(ConfirmAction, ETriggerEvent::Started, this, &AHeritageCharacter::Confirm);
@@ -240,7 +237,6 @@ void AHeritageCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
     EndDash(); Super::EndPlay(EndPlayReason);
 }
 
-void AHeritageCharacter::ToggleMap() { GetWorld()->GetSubsystem<UHeritageGameFlowSubsystem>()->ToggleScreen(EHeritageScreen::Map); }
 void AHeritageCharacter::ToggleArchive() { GetWorld()->GetSubsystem<UHeritageGameFlowSubsystem>()->ToggleScreen(EHeritageScreen::Archive); }
 void AHeritageCharacter::ClearTransport()
 {
@@ -270,8 +266,19 @@ void AHeritageCharacter::Back()
     }
     else if (Flow->Era == EHeritageEra::Film && Flow->Director) { Flow->Director->Rollback(); }
 }
+void AHeritageCharacter::PrimaryClick()
+{
+    if (GetWorld()->GetSubsystem<UHeritageGameFlowSubsystem>()->OpenScreen != EHeritageScreen::None)
+    {
+        if (auto* PC = Cast<APlayerController>(GetController())) { if (auto* HUD = Cast<AHeritageHUD>(PC->GetHUD())) { HUD->Click(); } }
+        return; // Even if Click closed the screen, this press belongs exclusively to the UI.
+    }
+    Interactor->GrabOrDrop();
+}
 void AHeritageCharacter::Confirm()
 {
+    auto* Flow = GetWorld()->GetSubsystem<UHeritageGameFlowSubsystem>();
+    if (Flow->OpenScreen == EHeritageScreen::None) { Flow->ToggleReel(); return; }
     if (auto* PC = Cast<APlayerController>(GetController())) { if (auto* HUD = Cast<AHeritageHUD>(PC->GetHUD())) { HUD->Confirm(); } }
 }
 void AHeritageCharacter::Navigate(int32 X, int32 Y)

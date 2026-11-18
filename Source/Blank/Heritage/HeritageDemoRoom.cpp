@@ -129,7 +129,7 @@ void AHeritageDemoRoom::Build()
         Shards = GetWorld()->SpawnActor<AHeritageShards>(WorldPoint(PedestalBase + FVector(0, 0, PedestalSize.Z + 3)), GetActorRotation(), Params);
         Reel1 = GetWorld()->SpawnActor<AHeritageReelCanister>(WorldPoint(TableBase + FVector(40, -15, TableTopBottom + TableTopSize.Z + 3)), GetActorRotation(), Params);
         Reel2 = GetWorld()->SpawnActor<AHeritageReelCanister>(WorldPoint(PedestalBase + FVector(0, 0, PedestalSize.Z + 6)), GetActorRotation(), Params);
-        Reel2->ReelId = TEXT("Reel2"); Reel2->Object->bMemento = false;
+        Reel2->ReelId = TEXT("Reel2"); Reel2->Object->bMemento = true;
         Reel2->Object->DisplayName = NSLOCTEXT("Heritage", "Reel2", "Reel 2");
         Reel2->SetActorHiddenInGame(true); Reel2->SetActorEnableCollision(false);
         Key->SetFrozen(true);

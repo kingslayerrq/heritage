@@ -2,6 +2,7 @@
 #include "HeritageObjectComponent.h"
 #include "HeritageGameFlowSubsystem.h"
 #include "HeritageTags.h"
+#include "HeritageProps.h"
 #include "HeritageLog.h"
 #include "EngineUtils.h"
 #include "Engine/World.h"
@@ -17,7 +18,8 @@ void UHeritageArchiveSubsystem::LogAction(FGameplayTag Verb, const FText& Object
 }
 bool UHeritageArchiveSubsystem::ScanMemento(UHeritageObjectComponent* Object)
 {
-    if (!GetWorld()->GetSubsystem<UHeritageGameFlowSubsystem>()->CanUseCamera() || !IsValid(Object) || Object->GetOwner()->IsHidden() || !Object->bMemento || Object->HasState(HeritageTags::State_Scanned)) { return false; }
+    auto* Flow = GetWorld()->GetSubsystem<UHeritageGameFlowSubsystem>();
+    if (!Flow->CanUseCamera() || !IsValid(Object) || Object->GetOwner()->IsHidden() || !Object->bMemento || Object->HasState(HeritageTags::State_Scanned)) { return false; }
     FHeritageArchiveEntry Entry;
     Entry.Name = Object->DisplayName; Entry.Note = Object->MementoNote;
     Entry.StateAtCapture = Object->StateTags; Entry.Time = GetWorld()->GetTimeSeconds();
@@ -25,7 +27,21 @@ bool UHeritageArchiveSubsystem::ScanMemento(UHeritageObjectComponent* Object)
     Object->AddState(HeritageTags::State_Scanned);
     LogAction(HeritageTags::Verb_Photo, Entry.Name, FText::GetEmpty(), NSLOCTEXT("Heritage", "Captured", "Memento captured."));
     OnMementoScanned.Broadcast(Entry);
-    GetWorld()->GetSubsystem<UHeritageGameFlowSubsystem>()->NotifyScan();
+    Flow->NotifyScan();
+    if (auto* Reel = Cast<AHeritageReelCanister>(Object->GetOwner()))
+    {
+        Flow->CollectReel(Reel->ReelId);
+        Reel->SetActorHiddenInGame(true);
+        Reel->SetActorEnableCollision(false);
+    }
+    else if (Entries.Num() == 1)
+    {
+        Toast(NSLOCTEXT("Heritage", "FirstNotebookEntry", "Added to the Notebook. [N] opens the Archive."));
+    }
+    else
+    {
+        Toast(FText::Format(NSLOCTEXT("Heritage", "CaptureToast", "Captured: {0}"), Entry.Name));
+    }
     return true;
 }
 int32 UHeritageArchiveSubsystem::GetTotalMementos()

@@ -20,6 +20,11 @@ void AHeritageFilmDirector::RegisterActor(AHeritageProp* Prop)
 void AHeritageFilmDirector::Initialize(AHeritageDemoRoom* InRoom)
 {
     Room = InRoom; Segment = HeritageReelData::BuildReel1(); Baseline.Empty();
+    Edits.Empty();
+    for (int32 Frame = 0; Frame < Segment.Scenes.Num(); ++Frame)
+    {
+        if (IsMissing(Frame)) { Edits.Add(Frame, FHeritageFrameEdit()); }
+    }
     if (!Room) { return; }
     for (const auto& Pair : Actors) { if (Pair.Value) { Baseline.Add(Pair.Value->Capture(Room->GetActorTransform())); } }
     SetScene(0);
@@ -59,17 +64,64 @@ void AHeritageFilmDirector::CaptureLayer()
     for (const auto& Pair : Actors) { if (Pair.Value) { Layer.Add(Pair.Value->Capture(Room->GetActorTransform())); } }
     bHasLayer = true; LayerScene = SceneIndex; LayerPauseSession = PauseSession;
 }
+void AHeritageFilmDirector::DiscardLayer()
+{
+    Layer.Empty(); bHasLayer = false; LayerScene = INDEX_NONE; LayerPauseSession = 0;
+}
 void AHeritageFilmDirector::EndVisit()
 {
     if (Mode == EHeritageFilmMode::Pause) { CaptureLayer(); }
     bVisiting = false; FreezeAll(true);
 }
-int32 AHeritageFilmDirector::LastPlayableScene() const { return KeyEdit.bUploaded ? Segment.Scenes.Num() - 1 : Segment.KeySceneIndex; }
-bool AHeritageFilmDirector::IsOnMissingFrame() const { return SceneIndex == Segment.KeySceneIndex && !KeyEdit.bUploaded; }
+bool AHeritageFilmDirector::IsMissing(int32 Frame) const
+{
+    return Segment.Scenes.IsValidIndex(Frame) && Segment.Scenes[Frame].Kind == EHeritageSceneKind::Missing;
+}
+const FHeritageFrameEdit& AHeritageFilmDirector::GetEdit(int32 Frame) const
+{
+    static const FHeritageFrameEdit Empty;
+    const auto* Edit = Edits.Find(Frame); return Edit ? *Edit : Empty;
+}
+bool AHeritageFilmDirector::IsRestored(int32 Frame) const { return IsMissing(Frame) && GetEdit(Frame).bUploaded; }
+int32 AHeritageFilmDirector::GetFirstUnrestoredFrame() const
+{
+    for (int32 Index = 0; Index < Segment.Scenes.Num(); ++Index)
+    {
+        if (IsMissing(Index) && !IsRestored(Index)) { return Index; }
+    }
+    return INDEX_NONE;
+}
+int32 AHeritageFilmDirector::GetLastReachableFrame() const
+{
+    const int32 LastFrame = Segment.Scenes.Num() - 1;
+    const int32 FirstUnrestored = GetFirstUnrestoredFrame();
+    return FirstUnrestored == INDEX_NONE ? LastFrame : FMath::Min(FirstUnrestored + 1, LastFrame);
+}
+bool AHeritageFilmDirector::IsLocked(int32 Frame) const
+{
+    return Segment.Scenes.IsValidIndex(Frame) && Frame > GetLastReachableFrame();
+}
+int32 AHeritageFilmDirector::GetTargetFrame() const
+{
+    for (int32 Frame = SceneIndex; Frame < Segment.Scenes.Num(); ++Frame)
+    {
+        if (IsMissing(Frame) && !IsRestored(Frame)) { return Frame; }
+    }
+    return INDEX_NONE;
+}
+bool AHeritageFilmDirector::IsOnMissingFrame() const { return IsMissing(SceneIndex) && !IsRestored(SceneIndex); }
+float AHeritageFilmDirector::GetFrameDuration() const
+{
+    return FMath::Max(IsOnMissingFrame() ? GapSecondsPerAction * Segment.Scenes[SceneIndex].Answer.Num() : FrameInterval, UE_SMALL_NUMBER);
+}
+float AHeritageFilmDirector::GetGapProgress01() const
+{
+    return IsOnMissingFrame() ? FMath::Clamp(FrameTimer / GetFrameDuration(), 0.f, 1.f) : 0.f;
+}
 void AHeritageFilmDirector::SetScene(int32 Index)
 {
     if (!Room || Segment.Scenes.IsEmpty()) { return; }
-    DropHeld(); SceneIndex = FMath::Clamp(Index, 0, LastPlayableScene()); FrameTimer = 0.f;
+    DropHeld(); SceneIndex = FMath::Clamp(Index, 0, GetLastReachableFrame()); FrameTimer = 0.f;
     TArray<FHeritageActorSnapshot> Effective = Baseline;
     const auto Merge = [&Effective](const TArray<FHeritageActorSnapshot>& Keys)
     {
@@ -81,30 +133,56 @@ void AHeritageFilmDirector::SetScene(int32 Index)
     };
     for (int32 Frame = 0; Frame <= SceneIndex; ++Frame)
     {
-        Merge(Segment.Scenes[Frame].Keys);
-        if (Frame == Segment.KeySceneIndex && KeyEdit.bUploaded) { Merge(Segment.RestoredKeyScene); }
+        if (!IsMissing(Frame)) { Merge(Segment.Scenes[Frame].Keys); }
+        else if (IsRestored(Frame)) { Merge(Segment.Scenes[Frame].Restored); }
     }
     if (IsOnMissingFrame())
     {
         for (auto& Snapshot : Effective) { if (Snapshot.Id == FName(TEXT("Butler"))) { Snapshot.bHidden = true; } }
     }
     RestoreSnapshots(Effective); FreezeAll(true); ApplyLight(); LastCutTime = GetWorld()->GetTimeSeconds();
+    if (bVisiting && SceneIndex == Segment.Scenes.Num() - 1) { bShownLastFrame = true; }
     if (IsOnMissingFrame() && bVisiting) { GetWorld()->GetSubsystem<UHeritageGameFlowSubsystem>()->NotifyMissingFrame(); }
 }
-void AHeritageFilmDirector::StepScene(int32 Delta) { SetScene(SceneIndex + Delta); }
+void AHeritageFilmDirector::StepScene(int32 Delta)
+{
+    if (!Room || Segment.Scenes.IsEmpty()) { return; }
+    const int32 Destination = SceneIndex + FMath::Clamp(Delta, -SceneIndex, GetLastReachableFrame() - SceneIndex);
+    while (SceneIndex != Destination)
+    {
+        SetScene(SceneIndex + (Delta > 0 ? 1 : -1));
+    }
+}
 void AHeritageFilmDirector::Tick(float DeltaSeconds)
 {
-    Super::Tick(DeltaSeconds);
-    const auto* Flow = GetWorld()->GetSubsystem<UHeritageGameFlowSubsystem>();
-    if (!bVisiting || bScreenSuspended || Mode != EHeritageFilmMode::Play || !Flow || !Flow->CanMove()) { return; }
-    if ((PlayDirection > 0 && SceneIndex >= LastPlayableScene()) || (PlayDirection < 0 && SceneIndex <= 0)) { FrameTimer = 0.f; return; }
-    FrameTimer += DeltaSeconds;
-    const float Interval = FMath::Max(FrameInterval / Rate, UE_SMALL_NUMBER);
-    while (FrameTimer >= Interval)
+    Super::Tick(DeltaSeconds); AdvanceTime(DeltaSeconds);
+    // Reactions and the interactor can post their own toast after RecordFact in the same input event.
+    // Present the imaging transition after that event, without coupling gameplay verbs to facts.
+    if (PendingImagedFrame != INDEX_NONE)
     {
-        const float Remainder = FrameTimer - Interval;
+        if (bVisiting && IsImaged(PendingImagedFrame) && !IsRestored(PendingImagedFrame))
+        {
+            UHeritageStatics::Toast(this, FText::Format(NSLOCTEXT("Heritage", "FrameImaged", "Frame {0} imaged."), FText::AsNumber(PendingImagedFrame + 1)));
+        }
+        PendingImagedFrame = INDEX_NONE;
+    }
+}
+void AHeritageFilmDirector::AdvanceTime(float DeltaSeconds)
+{
+    const auto* Flow = GetWorld()->GetSubsystem<UHeritageGameFlowSubsystem>();
+    if (!bVisiting || bScreenSuspended || Mode != EHeritageFilmMode::Play || !Flow || !Flow->CanMove() || !Room) { return; }
+    const int32 TransportEnd = PlayDirection > 0 ? GetLastReachableFrame() : 0;
+    if (TransportEnd == INDEX_NONE || SceneIndex == TransportEnd) { return; }
+    // Timer is in reel seconds, so changing transport rate preserves gap progress.
+    FrameTimer += FMath::Max(DeltaSeconds, 0.f) * Rate;
+    while (FrameTimer >= GetFrameDuration())
+    {
+        const float Remainder = FrameTimer - GetFrameDuration();
         StepScene(PlayDirection); FrameTimer = Remainder;
-        if ((PlayDirection > 0 && SceneIndex >= LastPlayableScene()) || (PlayDirection < 0 && SceneIndex <= 0)) { FrameTimer = 0.f; break; }
+        if (SceneIndex == TransportEnd)
+        {
+            FrameTimer = 0.f; break;
+        }
     }
 }
 void AHeritageFilmDirector::SetTransport(bool bForwardHeld, bool bRewindHeld)
@@ -137,15 +215,27 @@ void AHeritageFilmDirector::ResumePlay(int32 Direction)
 void AHeritageFilmDirector::Rollback()
 {
     if (!IsRecording()) { return; }
-    DropHeld(); bHasLayer = false; Layer.Empty(); LayerScene = INDEX_NONE;
-    TakeFacts.RemoveAll([this](const auto& Fact) { return Fact.PauseSession == PauseSession; });
-    // Unuploaded compositions cannot retain evidence removed by rollback.
-    const auto Facts = GetDistinctFacts();
-    for (auto* Edit : { &KeyEdit, &LeafEdit })
+    DropHeld(); DiscardLayer();
+    const int32 Target = GetTargetFrame();
+    TakeFacts.RemoveAll([this, Target](const auto& Fact)
     {
-        if (!Edit->bUploaded) { Edit->ChosenFacts.RemoveAll([&Facts](FGameplayTag Tag) { return !Facts.ContainsByPredicate([Tag](const auto& Fact) { return Fact.Fact == Tag; }); }); }
+        // The target must become unimaged even if its evidence came from another pause.
+        // Uploaded evidence remains immutable, and other frames keep their independent evidence.
+        return !IsRestored(Fact.SceneIndex) && (Fact.PauseSession == PauseSession || Fact.SceneIndex == Target);
+    });
+    // Remove rolled-back evidence from its frame's unuploaded checklist too.
+    for (auto& Pair : Edits)
+    {
+        const auto Facts = GetFactsFor(Pair.Key);
+        if (!Pair.Value.bUploaded)
+        {
+            Pair.Value.ChosenFacts.RemoveAll([&Facts](FGameplayTag Tag)
+            {
+                return !Facts.ContainsByPredicate([Tag](const auto& Fact) { return Fact.Fact == Tag; });
+            });
+        }
     }
-    RecomputeImaged(); SetScene(SceneIndex); FreezeAll(false);
+    SetScene(SceneIndex); FreezeAll(false);
     UHeritageStatics::Toast(this, NSLOCTEXT("Heritage", "RolledBack", "Rolled back."));
 }
 void AHeritageFilmDirector::SetScreenSuspended(bool bSuspend)
@@ -153,101 +243,116 @@ void AHeritageFilmDirector::SetScreenSuspended(bool bSuspend)
     bScreenSuspended = bSuspend;
     FreezeAll(bSuspend || Mode == EHeritageFilmMode::Play || !bVisiting);
 }
-void AHeritageFilmDirector::RecomputeImaged()
+bool AHeritageFilmDirector::IsImaged(int32 Frame) const
 {
-    FGameplayTagContainer Facts; for (const auto& Record : TakeFacts) { Facts.AddTag(Record.Fact); }
-    const bool bWasImaged = bImaged; bImaged = Facts.HasAllExact(Segment.KeyAnswer);
-    if (bImaged && !bWasImaged)
-    {
-        UHeritageStatics::Toast(this, NSLOCTEXT("Heritage", "Imaged", "Imaging successful."));
-        GetWorld()->GetSubsystem<UHeritageGameFlowSubsystem>()->NotifyImaged();
-    }
-    else if (!bImaged && bWasImaged)
-    {
-        auto* Flow = GetWorld()->GetSubsystem<UHeritageGameFlowSubsystem>();
-        if (!Flow->bKeySceneUploaded && Flow->ObjectiveStage == 6) { Flow->ObjectiveStage = 5; }
-    }
+    if (!IsMissing(Frame)) { return false; }
+    FGameplayTagContainer Facts;
+    for (const auto& Record : GetFactsFor(Frame)) { Facts.AddTag(Record.Fact); }
+    return Facts.HasAllExact(Segment.Scenes[Frame].Answer);
 }
 void AHeritageFilmDirector::RecordFact(FGameplayTag Fact, const FText& Text)
 {
-    if (!IsRecording() || !Fact.IsValid()) { return; }
-    if (TakeFacts.ContainsByPredicate([this, Fact](const auto& Record) { return Record.Fact == Fact && Record.PauseSession == PauseSession; })) { return; }
-    FHeritageFactRecord Record; Record.Fact = Fact; Record.Text = Text; Record.SceneIndex = SceneIndex; Record.PauseSession = PauseSession;
-    TakeFacts.Add(Record); RecomputeImaged();
+    const int32 Frame = GetTargetFrame();
+    if (!IsRecording() || !Fact.IsValid() || Frame == INDEX_NONE) { return; }
+    if (TakeFacts.ContainsByPredicate([this, Fact, Frame](const auto& Record)
+        { return Record.Fact == Fact && Record.SceneIndex == Frame && Record.PauseSession == PauseSession; })) { return; }
+    const bool bWasImaged = IsImaged(Frame);
+    FHeritageFactRecord Record; Record.Fact = Fact; Record.Text = Text; Record.SceneIndex = Frame; Record.PauseSession = PauseSession;
+    TakeFacts.Add(Record);
+    if (!bWasImaged && IsImaged(Frame))
+    {
+        PendingImagedFrame = Frame;
+        UHeritageStatics::Toast(this, FText::Format(NSLOCTEXT("Heritage", "FrameImaged", "Frame {0} imaged."), FText::AsNumber(Frame + 1)));
+    }
 }
-TArray<FHeritageFactRecord> AHeritageFilmDirector::GetDistinctFacts() const
+TArray<FHeritageFactRecord> AHeritageFilmDirector::GetFactsFor(int32 Frame) const
 {
     TArray<FHeritageFactRecord> Result;
     for (const auto& Record : TakeFacts)
     {
-        if (!Result.ContainsByPredicate([&Record](const auto& Other) { return Other.Fact == Record.Fact; })) { Result.Add(Record); }
+        if (Record.SceneIndex == Frame && !Result.ContainsByPredicate([&Record](const auto& Other) { return Other.Fact == Record.Fact; })) { Result.Add(Record); }
     }
     return Result;
 }
-bool AHeritageFilmDirector::CanEdit(bool bKeyFrame, FText& Why) const
+bool AHeritageFilmDirector::CanEdit(int32 Frame, FText& Why) const
 {
-    if (GetEdit(bKeyFrame).bUploaded) { Why = NSLOCTEXT("Heritage", "EditLocked", "Uploaded frames cannot be changed."); return false; }
-    if (bKeyFrame && !bImaged) { Why = NSLOCTEXT("Heritage", "NeedImaging", "Act out the missing moment to image it first."); return false; }
-    if (!bKeyFrame && TakeFacts.IsEmpty()) { Why = NSLOCTEXT("Heritage", "NeedFact", "Record an action in Pause Mode first."); return false; }
+    if (!IsMissing(Frame)) { Why = NSLOCTEXT("Heritage", "ReadableFrame", "This frame is already readable."); return false; }
+    if (IsRestored(Frame)) { Why = NSLOCTEXT("Heritage", "EditLocked", "Uploaded frames cannot be changed."); return false; }
+    if (!IsImaged(Frame)) { Why = NSLOCTEXT("Heritage", "NeedImaging", "Act out the missing moment to image it first."); return false; }
     Why = FText::GetEmpty(); return true;
 }
-void AHeritageFilmDirector::ToggleFact(bool bKeyFrame, FGameplayTag Fact)
+bool AHeritageFilmDirector::CanUpload(int32 Frame, FText& Why) const
 {
-    FText Why; if (!CanEdit(bKeyFrame, Why)) { return; }
-    if (!TakeFacts.ContainsByPredicate([Fact](const auto& Record) { return Record.Fact == Fact; })) { return; }
-    auto& Chosen = (bKeyFrame ? KeyEdit : LeafEdit).ChosenFacts;
+    const int32 Earlier = GetFirstUnrestoredFrame();
+    if (IsMissing(Frame) && Earlier != INDEX_NONE && Earlier < Frame)
+    {
+        Why = FText::Format(NSLOCTEXT("Heritage", "RestoreEarlier", "Restore frame {0} first."), FText::AsNumber(Earlier + 1)); return false;
+    }
+    return CanEdit(Frame, Why);
+}
+void AHeritageFilmDirector::ToggleFact(int32 Frame, FGameplayTag Fact)
+{
+    FText Why; if (!CanEdit(Frame, Why)) { return; }
+    if (!GetFactsFor(Frame).ContainsByPredicate([Fact](const auto& Record) { return Record.Fact == Fact; })) { return; }
+    auto& Chosen = Edits.FindChecked(Frame).ChosenFacts;
     if (Chosen.Contains(Fact)) { Chosen.Remove(Fact); } else { Chosen.Add(Fact); }
 }
-void AHeritageFilmDirector::CycleAudio(bool bKeyFrame, int32 Delta)
+void AHeritageFilmDirector::CycleAudio(int32 Frame, int32 Delta)
 {
-    FText Why; if (!CanEdit(bKeyFrame, Why)) { return; }
-    auto& Edit = bKeyFrame ? KeyEdit : LeafEdit; Edit.AudioChoice = ((Edit.AudioChoice + Delta) % 4 + 4) % 4;
+    FText Why; if (!CanEdit(Frame, Why)) { return; }
+    auto& Edit = Edits.FindChecked(Frame); Edit.AudioChoice = ((Edit.AudioChoice + Delta) % 4 + 4) % 4;
 }
-void AHeritageFilmDirector::CycleLight(bool bKeyFrame, int32 Delta)
+void AHeritageFilmDirector::CycleLight(int32 Frame, int32 Delta)
 {
-    FText Why; if (!CanEdit(bKeyFrame, Why)) { return; }
-    auto& Edit = bKeyFrame ? KeyEdit : LeafEdit; Edit.LightChoice = ((Edit.LightChoice + Delta) % 3 + 3) % 3;
+    FText Why; if (!CanEdit(Frame, Why)) { return; }
+    auto& Edit = Edits.FindChecked(Frame); Edit.LightChoice = ((Edit.LightChoice + Delta) % 3 + 3) % 3;
 }
-bool AHeritageFilmDirector::Upload(bool bKeyFrame, FText& OutResult)
+bool AHeritageFilmDirector::Upload(int32 Frame, FText& OutResult)
 {
-    if (!CanEdit(bKeyFrame, OutResult)) { return false; }
-    auto& Edit = bKeyFrame ? KeyEdit : LeafEdit;
+    if (!CanUpload(Frame, OutResult)) { return false; }
+    auto& Edit = Edits.FindChecked(Frame);
     FGameplayTagContainer Chosen;
+    const auto Facts = GetFactsFor(Frame);
     for (FGameplayTag Fact : Edit.ChosenFacts)
     {
-        if (!TakeFacts.ContainsByPredicate([Fact](const auto& Record) { return Record.Fact == Fact; })) { return false; }
-        Chosen.AddTag(Fact);
+        if (Facts.ContainsByPredicate([Fact](const auto& Record) { return Record.Fact == Fact; })) { Chosen.AddTag(Fact); }
     }
-    if (bKeyFrame ? !(Chosen.HasAllExact(Segment.KeyAnswer) && Segment.KeyAnswer.HasAllExact(Chosen)) : Chosen.Num() != 1)
+    const auto& Answer = Segment.Scenes[Frame].Answer;
+    if (Chosen.Num() != Edit.ChosenFacts.Num() || !Chosen.HasAllExact(Answer) || !Answer.HasAllExact(Chosen))
     {
         OutResult = NSLOCTEXT("Heritage", "WrongFrames", "The frames do not fit together."); return false;
     }
     Edit.bUploaded = true;
     auto* Flow = GetWorld()->GetSubsystem<UHeritageGameFlowSubsystem>();
-    if (bKeyFrame)
+    if (Flow->Era == EHeritageEra::Film)
     {
-        Flow->NotifyKeyUploaded(); OutResult = NSLOCTEXT("Heritage", "Restored", "Frame restored. The rest of the reel is readable.");
+        DiscardLayer();
+        Mode = EHeritageFilmMode::Play; SetTransport(false, false);
+        SetScene(Frame);
     }
-    else if (Chosen.HasTagExact(HeritageTags::Fact_ReelFound))
-    {
-        Flow->UnlockLeafReward(); OutResult = NSLOCTEXT("Heritage", "KnowWhere", "You know where to look now.");
-    }
-    else { OutResult = NSLOCTEXT("Heritage", "AccountRecorded", "Your account is on the reel."); }
-    if (Mode == EHeritageFilmMode::Play) { SetScene(SceneIndex); }
+    Flow->CloseScreen();
+    PendingImagedFrame = INDEX_NONE;
+    OutResult = FText::Format(NSLOCTEXT("Heritage", "FrameRestored", "Frame {0} restored."), FText::AsNumber(Frame + 1));
     UHeritageStatics::LogAction(this, HeritageTags::Verb_Film, Segment.Title, FText::GetEmpty(), OutResult);
+    UHeritageStatics::Toast(this, OutResult);
     return true;
 }
 FText AHeritageFilmDirector::GetCaption() const
 {
-    if (SceneIndex == Segment.KeySceneIndex && KeyEdit.bUploaded) { return NSLOCTEXT("Heritage", "RestoredCaption", "The fire is out. The butler holds the key."); }
+    if (IsRestored(SceneIndex))
+    {
+        return SceneIndex == 2 ? NSLOCTEXT("Heritage", "FilledCaption", "The butler fills the kettle at the basin.") :
+            NSLOCTEXT("Heritage", "RestoredCaption", "The fire is out. The butler holds the key.");
+    }
     return Segment.Scenes.IsValidIndex(SceneIndex) ? Segment.Scenes[SceneIndex].Caption : FText::GetEmpty();
 }
 FText AHeritageFilmDirector::GetSceneStatus(int32 Index) const
 {
     if (!Segment.Scenes.IsValidIndex(Index)) { return FText::GetEmpty(); }
-    if (Index > LastPlayableScene()) { return NSLOCTEXT("Heritage", "Locked", "Locked"); }
-    if (Index == Segment.KeySceneIndex) { return KeyEdit.bUploaded ? NSLOCTEXT("Heritage", "RestoredStatus", "Restored") : NSLOCTEXT("Heritage", "MissingStatus", "Missing"); }
-    return NSLOCTEXT("Heritage", "Readable", "Readable");
+    if (IsLocked(Index)) { return NSLOCTEXT("Heritage", "LockedStatus", "LOCKED"); }
+    if (IsRestored(Index)) { return NSLOCTEXT("Heritage", "V2RestoredStatus", "RESTORED"); }
+    if (IsImaged(Index)) { return NSLOCTEXT("Heritage", "ImagedStatus", "IMAGED"); }
+    return IsMissing(Index) ? NSLOCTEXT("Heritage", "V2MissingStatus", "MISSING") : NSLOCTEXT("Heritage", "V2ReadableStatus", "READABLE");
 }
 FText AHeritageFilmDirector::AudioName(int32 Choice)
 {
@@ -271,16 +376,14 @@ FText AHeritageFilmDirector::LightName(int32 Choice)
 FText AHeritageFilmDirector::GetAudioCaption() const
 {
     if (Mode != EHeritageFilmMode::Play) { return FText::GetEmpty(); }
-    if (SceneIndex == Segment.KeySceneIndex && KeyEdit.bUploaded) { return AudioName(KeyEdit.AudioChoice); }
-    if (SceneIndex == Segment.LeafSceneIndex && LeafEdit.bUploaded) { return AudioName(LeafEdit.AudioChoice); }
+    if (IsRestored(SceneIndex)) { return AudioName(GetEdit(SceneIndex).AudioChoice); }
     return FText::GetEmpty();
 }
 void AHeritageFilmDirector::ApplyLight()
 {
     if (!Room || !Room->GetMainLight()) { return; }
     int32 Choice = 0;
-    if (SceneIndex == Segment.KeySceneIndex && KeyEdit.bUploaded) { Choice = KeyEdit.LightChoice; }
-    if (SceneIndex == Segment.LeafSceneIndex && LeafEdit.bUploaded) { Choice = LeafEdit.LightChoice; }
+    if (IsRestored(SceneIndex)) { Choice = GetEdit(SceneIndex).LightChoice; }
     Room->GetMainLight()->SetLightColor(Choice == 1 ? ColdLightColor : Choice == 2 ? FLinearColor::White : Room->RoomLightColor);
     Room->GetMainLight()->SetIntensity(Room->RoomLightIntensity * (Choice == 1 ? ColdLightMultiplier : Choice == 2 ? DaylightMultiplier : 1.f));
 }

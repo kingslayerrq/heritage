@@ -10,9 +10,9 @@ enum class EHeritageEra : uint8 { Reality, Film };
 UENUM()
 enum class EHeritageFilmMode : uint8 { Play, Pause };
 UENUM()
-enum class EHeritageSceneKind : uint8 { Readable, MissingKey };
+enum class EHeritageSceneKind : uint8 { Readable, Missing };
 UENUM()
-enum class EHeritageScreen : uint8 { None, Map, Archive };
+enum class EHeritageScreen : uint8 { None, Archive };
 
 // Value-only records: these contain no UObject references and need no GC traversal.
 USTRUCT()
@@ -29,10 +29,10 @@ struct BLANK_API FHeritageSceneDef
 {
     GENERATED_BODY()
     EHeritageSceneKind Kind = EHeritageSceneKind::Readable;
-    bool bLockedUntilKeyUploaded = false;
-    bool bHasDamagedArea = false;
     FText Caption;
     TArray<FHeritageActorSnapshot> Keys;
+    FGameplayTagContainer Answer;
+    TArray<FHeritageActorSnapshot> Restored;
 };
 USTRUCT()
 struct BLANK_API FHeritageFactRecord
@@ -59,10 +59,6 @@ struct BLANK_API FHeritageSegmentDef
     FName ReelId;
     FText Title;
     TArray<FHeritageSceneDef> Scenes;
-    int32 KeySceneIndex = 4;
-    int32 LeafSceneIndex = 2;
-    FGameplayTagContainer KeyAnswer;
-    TArray<FHeritageActorSnapshot> RestoredKeyScene;
 };
 
 USTRUCT(BlueprintType)

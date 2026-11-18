@@ -4,6 +4,7 @@
 #include "HeritageStatics.h"
 #include "HeritageTags.h"
 #include "HeritageGameFlowSubsystem.h"
+#include "HeritageFilmDirector.h"
 #include "EngineUtils.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/BoxComponent.h"
@@ -58,7 +59,10 @@ bool AHeritageBreakable::HandleStimulus(const FHeritageStimulus& Stimulus)
     }
     UHeritageStatics::RecordFact(this, HeritageTags::Fact_VaseBroken, NSLOCTEXT("Heritage", "FactVase", "Broke the vase."));
     if (FilmReel) { UHeritageStatics::RecordFact(this, HeritageTags::Fact_ReelFound, NSLOCTEXT("Heritage", "FactReel", "A film reel was hidden in the vase.")); }
-    Reaction(this, Stimulus, NSLOCTEXT("Heritage", "Shattered", "Vase shattered.")); return true;
+    Reaction(this, Stimulus, NSLOCTEXT("Heritage", "Shattered", "Vase shattered."));
+    auto* Flow = GetWorld()->GetSubsystem<UHeritageGameFlowSubsystem>();
+    if (FilmReel && Flow && Flow->Era == EHeritageEra::Film && Flow->Director && Flow->Director->IsRecording()) { Flow->UnlockLeafReward(); }
+    return true;
 }
 void AHeritageBreakable::RefreshFromState()
 {
@@ -343,7 +347,7 @@ bool AHeritagePortrait::HandleStimulus(const FHeritageStimulus& Stimulus)
 {
     if (Stimulus.Type != HeritageTags::Stimulus_Use) { return false; }
     auto* Flow = GetWorld()->GetSubsystem<UHeritageGameFlowSubsystem>();
-    if (Flow->Era == EHeritageEra::Reality && Flow->IsKeySceneUploaded())
+    if (Flow->Era == EHeritageEra::Reality)
     {
         if (Flow->RequiresScanHere() && Object->bMemento && !Object->HasState(HeritageTags::State_Scanned))
         {
@@ -396,12 +400,8 @@ bool AHeritageReelCanister::HandleStimulus(const FHeritageStimulus& Stimulus)
     if (IsHidden() || Stimulus.Type != HeritageTags::Stimulus_Use) { return false; }
     auto* Flow = GetWorld()->GetSubsystem<UHeritageGameFlowSubsystem>();
     if (!Flow || !Flow->CanUseVerbs() || Flow->Era != EHeritageEra::Reality) { return false; }
-    if (Flow->RequiresScanHere() && Object->bMemento && !Object->HasState(HeritageTags::State_Scanned))
-    {
-        Reaction(this, Stimulus, NSLOCTEXT("Heritage", "ScanFirst", "Scan this first with the camera.")); return false;
-    }
-    Flow->CollectReel(ReelId); SetActorHiddenInGame(true); SetActorEnableCollision(false);
-    Reaction(this, Stimulus, NSLOCTEXT("Heritage", "RackAdded", "Added to the film rack.")); return true;
+    Reaction(this, Stimulus, NSLOCTEXT("Heritage", "ScanFirst", "Scan this first with the camera."));
+    return false;
 }
 AHeritageShards::AHeritageShards()
 {
